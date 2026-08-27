@@ -129,13 +129,14 @@ class Seg:
     also travels along the ring path
     '''
 
-    def __init__(self, span0, lifetime, omega=0.0, angle=None, name=""):
+    def __init__(self, span0, lifetime, omega=0.0, angle=None, name="", meta=None):
         self.angle = random.uniform(0, math.tau) if angle is None else angle
         self.span0 = span0        # starting angular width, radians
         self.span = span0
         self.lifetime = lifetime  # seconds to shrink from span0 to nothing
         self.omega = omega        # radians/sec; 0 keeps the seg parked
         self.name = name
+        self.meta = meta          # (course, section) this block belongs to
         self.phase = 0.0          # beat phase, only advances once beating
 
 
@@ -224,13 +225,14 @@ class SegField:
     """
 
     def __init__(self, span0, lifetime, spawn_range=(0.4, 1.4),
-                 max_segs=5, gap=math.radians(6), names=SEG_NAMES):
+                 max_segs=5, gap=math.radians(6), names=SEG_NAMES, queue=None):
         self.span0 = span0
         self.lifetime = lifetime
         self.spawn_range = spawn_range
         self.max_segs = max_segs
         self.gap = gap
         self.names = names
+        self.queue = list(queue) if queue else None   # syllabus blocks to hand out
         self.segs = []
         self.timer = random.uniform(*spawn_range)
 
@@ -247,22 +249,40 @@ class SegField:
     def spawn(self):
         if len(self.segs) >= self.max_segs:
             return None
+        if self.queue is not None and not self.queue:
+            return None
         angle = self.free_angle()
         if angle is None:
+            # no room right now; the block stays queued for the next tick
             return None
 
-        taken = {s.name for s in self.segs}
-        pool = [n for n in self.names if n not in taken] or list(self.names)
-        seg = Seg(self.span0, self.lifetime, angle=angle, name=random.choice(pool))
+        if self.queue is not None:
+            course, section = self.queue.pop()
+            seg = Seg(self.span0, self.lifetime, angle=angle,
+                      name=f"{course} {section}", meta=(course, section))
+        else:
+            taken = {s.name for s in self.segs}
+            pool = [n for n in self.names if n not in taken] or list(self.names)
+            seg = Seg(self.span0, self.lifetime, angle=angle, name=random.choice(pool))
         self.segs.append(seg)
         return seg
 
-    def update(self, dt):
-        """Advance every seg. Returns the segs that expired uncaught this frame."""
+    def update(self, dt, time_left=None):
+        """
+        Advance every seg. Returns the segs that expired uncaught this frame.
+
+        With a queue and a time budget the spawn interval is recomputed each
+        tick as time_left / blocks_remaining, so every block still gets handed
+        out even when spawns are skipped for lack of room on the ring.
+        """
         self.timer -= dt
         if self.timer <= 0:
             self.spawn()
-            self.timer = random.uniform(*self.spawn_range)
+            if self.queue is not None and time_left is not None and self.queue:
+                pace = time_left / len(self.queue)
+                self.timer = max(self.spawn_range[0], min(self.spawn_range[1], pace))
+            else:
+                self.timer = random.uniform(*self.spawn_range)
 
         for seg in self.segs:
             seg.update(dt)
@@ -571,7 +591,8 @@ class Animation:
 class OneShot:
     """Plays a frame list once at a fixed position, then reports itself finished."""
 
-    def __init__(self, frames, pos, fps=22, scale=1):
+    def __init__(self, frames, pos, fps=22, scale=1, hold=False):
+        self.hold = hold          # freeze on the last frame instead of ending
         self.frames = frames
         self.pos = pos
         self.fps = fps
@@ -581,7 +602,7 @@ class OneShot:
 
     @property
     def done(self):
-        return self.index >= len(self.frames)
+        return not self.hold and self.index >= len(self.frames)
 
     def update(self, dt):
         self.timer += dt
@@ -593,7 +614,7 @@ class OneShot:
     def draw(self, surface):
         if self.done:
             return
-        image = self.frames[self.index]
+        image = self.frames[min(self.index, len(self.frames) - 1)]
         if self.scale != 1:
             size = (int(image.get_width() * self.scale), int(image.get_height() * self.scale))
             image = pygame.transform.scale(image, size)
@@ -648,3 +669,53 @@ class Scoreboard:
                                   f"missed {self.missed}")):
             text = self.font.render(line, True, self.color)
             surface.blit(text, (x, y + i * self.line_height))
+
+
+class ReportCard:
+    """End-of-semester screen: per-class grades, or the failure notice."""
+
+    def __init__(self, title_font, row_font, small_font, color,
+                 pass_color=(152, 221, 160), fail_color=(240, 110, 110)):
+        self.title_font = title_font
+        self.row_font = row_font
+        self.small_font = small_font
+        self.color = color
+        self.pass_color = pass_color
+        self.fail_color = fail_color
+
+    def draw(self, surface, syllabus, center, dim=190):
+        rows, overall, letter, points, failed = syllabus.report()
+
+        shade_layer = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        shade_layer.fill((6, 8, 14, dim))
+        surface.blit(shade_layer, (0, 0))
+
+        cx, top = center[0], center[1] - 150
+        head = "SEMESTER FAILED" if failed else "SEMESTER COMPLETE"
+        head_color = self.fail_color if failed else self.pass_color
+        text = self.title_font.render(head, True, head_color)
+        surface.blit(text, text.get_rect(center=(cx, top)))
+
+        y = top + 54
+        for course, score, row_letter, _ in rows:
+            ok = course not in failed
+            line = f"{course:<5} {score:5.1f}%  {row_letter}"
+            text = self.row_font.render(line, True,
+                                        self.pass_color if ok else self.fail_color)
+            surface.blit(text, text.get_rect(center=(cx, y)))
+            y += 32
+
+        y += 14
+        summary = f"semester {overall:.1f}%   grade {letter}   gpa {points:.1f}"
+        text = self.row_font.render(summary, True, self.color)
+        surface.blit(text, text.get_rect(center=(cx, y)))
+
+        if failed:
+            y += 34
+            note = "failed: " + ", ".join(failed) + "  (below 60%)"
+            text = self.small_font.render(note, True, self.fail_color)
+            surface.blit(text, text.get_rect(center=(cx, y)))
+
+        y += 40
+        text = self.small_font.render("press R to retry", True, self.color)
+        surface.blit(text, text.get_rect(center=(cx, y)))
