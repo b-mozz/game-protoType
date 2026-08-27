@@ -39,19 +39,33 @@ HIT_SOUND = "assets/sounds/hit-note.mp3"
 MISS_SOUND = "assets/sounds/missed-note.mp3"
 BACKGROUND_MUSIC = "assets/music/NewGenesisCut2.flac"
 SPLASH_SHEET = "assets/images/blood-splash.png"
+# monogram is a true pixel font: it is cut for 16px and only stays crisp at
+# integer multiples of that, so every size below is 16 * n.
+FONT_PATH = "assets/fonts/monogram/ttf/monogram-extended.ttf"
+FONT_UNIT = 16                  # the font's native pixel size
 SPLASH_FRAME = 96
 FRAME_SIZE = 250
 
 SEMESTER_SECONDS = 80           # one full run
 SEG_SPAN = math.radians(40)     # starting angular width
 SEG_LIFETIME = 4.2              # must outlast one bar lap, or it is uncatchable
-SEG_SPAWN_RANGE = (1.37, 1.37)  # fixed seconds between blocks
+SEG_SPAWN_RANGE = (0.30, 1.30)  # safety rails only; pacing picks the interval
+RUSH_AFTER = 50.0               # seconds, then blocks start coming faster
+RUSH_FACTOR = 0.62              # interval multiplier by the final whistle
 MAX_SEGS = 7
-LABEL_RADIUS = out_rad + 26
+# outer edge of everything the ring can draw: the band, its beat swell and
+# the hit bar's overhang. Labels are placed wholly outside this.
+RING_EDGE = out_rad + BEAT_AMPLITUDE + 10
+LABEL_GAP = 8               # px of air between the ring edge and a name
+LABEL_COLOR = (255, 214, 102)   # warm gold: reads against the forest, and is
+                                # not either of the seg colours
+LABEL_OUTLINE = (12, 14, 10)    # near-black, for the brightly lit bg patches
 
 BAR_OMEGA0 = 2.6                # radians/sec at the start (lap 2.4s)
 BAR_OMEGA_MAX = 5.0             # radians/sec once fully ramped
 BAR_RAMP = SEMESTER_SECONDS     # fully ramped by the final whistle
+BAR_BOOST_AFTER = 0.0           # the bar speeds up from the first second
+BAR_BOOST_RATE = 0.05           # rad/s added per second, linear all run
 BAR_COLOR = (255, 246, 214)   # warm cream, reads against the trees
 SPLASH_FPS = 22
 SPLASH_SCALE = 1.2
@@ -91,8 +105,8 @@ def main():
                            curve=SEG_CURVE, rim=SEG_RIM)
     crystal = CrystalRing((CX, CY), in_rad, out_rad, RING_COLOR, ring_style, ss=SS)
 
-    label_font = pygame.font.SysFont("menlo", 15, bold=True)
-    tiny = pygame.font.SysFont("menlo", 11, bold=True)
+    label_font = pygame.font.Font(FONT_PATH, FONT_UNIT * 2)
+    tiny = pygame.font.Font(FONT_PATH, FONT_UNIT)   # PixelText scales this up
     hud_text = PixelText(tiny, scale=2)
     big_text = PixelText(tiny, scale=3)
     small_text = PixelText(tiny, scale=2)
@@ -112,7 +126,9 @@ def main():
             "syllabus": syllabus,
             "field": SegField(SEG_SPAN, SEG_LIFETIME, spawn_range=SEG_SPAWN_RANGE,
                               max_segs=MAX_SEGS, queue=syllabus.build_queue()),
-            "bar": HitBar(BAR_OMEGA0, BAR_OMEGA_MAX, BAR_RAMP),
+            "bar": HitBar(BAR_OMEGA0, BAR_OMEGA_MAX, BAR_RAMP,
+                          boost_after=BAR_BOOST_AFTER,
+                          boost_rate=BAR_BOOST_RATE),
             "health": HealthBar(hud_text, MAX_HEALTH),
             "effects": Effects(),
             "clock": 0.0,
@@ -144,6 +160,10 @@ def main():
         on_title = run["phase"] == "title"
         time_left = max(0.0, SEMESTER_SECONDS - run["clock"])
         spawn_left = max(0.0, SEMESTER_SECONDS - SEG_LIFETIME - run["clock"])
+        rush = 1.0
+        if run["clock"] > RUSH_AFTER:
+            ramp = (run["clock"] - RUSH_AFTER) / max(SEMESTER_SECONDS - RUSH_AFTER, 1e-6)
+            rush = 1.0 - (1.0 - RUSH_FACTOR) * min(1.0, ramp)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -174,7 +194,8 @@ def main():
         if playing:
             ring.draw(screen, field.segs, SEG_FRESH, SEG_DYING, BEAT_AMPLITUDE,
                       bar=bar, bar_color=BAR_COLOR, style=seg_style)
-            field.draw_labels(screen, label_font, (CX, CY), LABEL_RADIUS, TEXT_COLOR)
+            field.draw_labels(screen, label_font, (CX, CY), RING_EDGE, LABEL_COLOR,
+                              gap=LABEL_GAP, outline=LABEL_OUTLINE)
         run["effects"].draw(screen)
 
         if on_title:
@@ -229,7 +250,7 @@ def main():
 
         run["clock"] += dt
         bar.update(dt)
-        for seg in field.update(dt, spawn_left):
+        for seg in field.update(dt, spawn_left, rush):
             run["syllabus"].expire(*seg.meta)
 
         if run["clock"] >= SEMESTER_SECONDS or (not field.queue and not field.segs):

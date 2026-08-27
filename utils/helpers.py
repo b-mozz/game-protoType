@@ -226,7 +226,7 @@ class SegField:
 
     def __init__(self, span0, lifetime, spawn_range=(0.4, 1.4),
                  max_segs=5, gap=math.radians(6), names=SEG_NAMES, queue=None,
-                 initial_delay=None):
+                 initial_delay=None, retry=0.12):
         self.span0 = span0
         self.lifetime = lifetime
         self.spawn_range = spawn_range
@@ -234,6 +234,7 @@ class SegField:
         self.gap = gap
         self.names = names
         self.queue = list(queue) if queue else None   # syllabus blocks to hand out
+        self.retry = retry            # short wait after a blocked spawn
         self.segs = []
         self.timer = (random.uniform(*spawn_range)
                   if initial_delay is None else initial_delay)
@@ -269,20 +270,30 @@ class SegField:
         self.segs.append(seg)
         return seg
 
-    def update(self, dt, time_left=None):
+    def update(self, dt, time_left=None, urgency=1.0):
         """
         Advance every seg. Returns the segs that expired uncaught this frame.
 
         With a queue and a time budget the spawn interval is recomputed each
         tick as time_left / blocks_remaining, so every block still gets handed
-        out even when spawns are skipped for lack of room on the ring.
+        out even when spawns are skipped for lack of room on the ring. urgency
+        below 1 tightens that interval -- used to rush the back half.
+
+        Note the clamp is a safety rail, not the schedule: if spawn_range is
+        narrow it will override the pacing entirely and blocks get stranded.
         """
         self.timer -= dt
         if self.timer <= 0:
-            self.spawn()
+            spawned = self.spawn()
             if self.queue is not None and time_left is not None and self.queue:
-                pace = time_left / len(self.queue)
-                self.timer = max(self.spawn_range[0], min(self.spawn_range[1], pace))
+                if spawned is None:
+                    # ring was full or crowded; come back soon rather than
+                    # burning a whole interval on a block that never appeared
+                    self.timer = self.retry
+                else:
+                    pace = time_left / len(self.queue) * urgency
+                    self.timer = max(self.spawn_range[0],
+                                     min(self.spawn_range[1], pace))
             else:
                 self.timer = random.uniform(*self.spawn_range)
 
@@ -309,10 +320,36 @@ class SegField:
                 return seg
         return None
 
-    def draw_labels(self, surface, font, center, radius, color):
+    def draw_labels(self, surface, font, center, radius, color, gap=0,
+                    outline=(12, 14, 10), outline_width=2, antialias=False):
+        """
+        Names sit wholly outside the circle of the given radius. Centring the
+        rect on the radius let wide names reach back over the ring band, so
+        each rect is pushed out along its own radius by its half-extent in
+        that direction -- the nearest corner just clears the boundary.
+
+        The parallax forest runs from near-black to bright lit patches, so a
+        flat colour blends somewhere on every run. Each name is laid over a
+        dark outline instead, which holds against both ends of that range.
+        Pass outline=None for plain text. Antialiasing is off by default:
+        the game renders a pixel font, and smoothing rounds its corners.
+        """
         for seg in self.segs:
-            text = font.render(seg.name, True, color)
-            surface.blit(text, text.get_rect(center=seg.label_pos(center, radius)))
+            text = font.render(seg.name, antialias, color)
+            rect = text.get_rect()
+            dx, dy = math.cos(seg.angle), math.sin(seg.angle)
+            reach = abs(dx) * rect.width / 2 + abs(dy) * rect.height / 2
+            r = radius + gap + reach
+            rect.center = (center[0] + r * dx, center[1] + r * dy)
+            rect.clamp_ip(surface.get_rect())
+
+            if outline is not None:
+                shadow = font.render(seg.name, antialias, outline)
+                w = outline_width
+                for ox, oy in ((-w, 0), (w, 0), (0, -w), (0, w),
+                               (-w, -w), (w, -w), (-w, w), (w, w)):
+                    surface.blit(shadow, rect.move(ox, oy))
+            surface.blit(text, rect)
 
 
 def shade(color, factor):
@@ -489,22 +526,31 @@ class CrystalRing:
 
 class HitBar:
     """
-    A marker sweeping around the ring. Its angular speed ramps from omega0
-    toward omega_max over `ramp` seconds, so the game tightens as it runs.
+    A marker sweeping around the ring. It holds omega0 for most of the run,
+    then past boost_after gains boost_rate rad/s every second, uncapped -- the
+    late-game squeeze.
     """
 
-    def __init__(self, omega0, omega_max, ramp, angle=0.0, width=7):
+    def __init__(self, omega0, omega_max, ramp, angle=0.0, width=7,
+                 boost_after=None, boost_rate=0.0):
         self.omega0 = omega0
         self.omega_max = omega_max
         self.ramp = ramp          # seconds to reach full speed
         self.angle = angle
         self.width = width        # px, measured across the sweep
+        self.boost_after = boost_after   # seconds; None disables the boost
+        self.boost_rate = boost_rate     # rad/s gained per second past that
         self.elapsed = 0.0
 
     @property
     def omega(self):
         t = min(1.0, self.elapsed / self.ramp)
-        return self.omega0 + 0.01 * t
+        speed = self.omega0 + 0.01 * t
+        if self.boost_after is not None and self.elapsed > self.boost_after:
+            # a steady climb, not a ramp to a ceiling: the longer it runs past
+            # boost_after, the faster it sweeps
+            speed += self.boost_rate * (self.elapsed - self.boost_after)
+        return speed
 
     def update(self, dt):
         self.elapsed += dt
