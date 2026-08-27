@@ -1,0 +1,3 @@
+# pygame-ce is a drop-in fork of pygame -- they share the `pygame` import name
+# and cannot be installed together. Uninstall pygame first if it is present.
+pygame-ce>=2.5.8

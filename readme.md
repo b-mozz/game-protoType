@@ -13,7 +13,7 @@ card.
 | Python | 3.13 |
 
 ```sh
-pip install pygame-ce
+pip install -r requirements.txt
 python main.py
 ```
 
