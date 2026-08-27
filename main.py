@@ -8,6 +8,7 @@ from utils.helpers import (
     PixelText, HealthBar, GradePanel,
 )
 from utils.syllabus import Syllabus, WEIGHTS
+from scenes.menu import TitleScreen, EnrollTransition
 
 W, H = cfg.WIDTH, cfg.HEIGHT # game width and height
 out_rad, in_rad = 180, 150
@@ -54,6 +55,11 @@ SPLASH_FPS = 22
 SPLASH_SCALE = 1.2
 
 MAX_HEALTH = 10                 # mis-presses tolerated
+TITLE_SECONDS = 10              # landing page auto-starts after this
+TITLE_TOP = 108
+TITLE_X = 390                   # text block sits left of the character
+TITLE_CHAR_POS = (840, 360)
+TITLE_CHAR_SCALE = 3.6
 REPORT_X = 70                   # report panel sits left...
 REPORT_TOP = 120
 END_CHAR_POS = (W - 265, H // 2 - 95)   # ...character to its right
@@ -90,6 +96,9 @@ def main():
     splash_frames = load_frames(SPLASH_SHEET, SPLASH_FRAME, SPLASH_FRAME)
     grades = GradePanel(hud_text, WEIGHTS)
     report_card = ReportCard(big_text, hud_text, small_text, TEXT_COLOR)
+    title_screen = TitleScreen(PixelText(tiny, scale=4), small_text, hud_text,
+                               TEXT_COLOR, RING_COLOR)
+    enroll_text = PixelText(tiny, scale=4)
 
     def new_run():
         syllabus = Syllabus()
@@ -101,7 +110,9 @@ def main():
             "health": HealthBar(hud_text, MAX_HEALTH),
             "effects": Effects(),
             "clock": 0.0,
-            "phase": "play",     # play -> dying -> report
+            "phase": "title",    # title -> enroll -> play -> dying -> report
+            "title_clock": 0.0,
+            "transition": None,
             "dead": False,
             "ending": None,      # the character animation shown at the end
         }
@@ -124,6 +135,7 @@ def main():
     while running:
         field, bar, health = run["field"], run["bar"], run["health"]
         playing = run["phase"] == "play"
+        on_title = run["phase"] == "title"
         time_left = max(0.0, SEMESTER_SECONDS - run["clock"])
         spawn_left = max(0.0, SEMESTER_SECONDS - SEG_LIFETIME - run["clock"])
 
@@ -150,7 +162,7 @@ def main():
                         finish(dead=True)
 
         background.draw(screen)
-        if run["phase"] == "play":
+        if run["phase"] in ("play", "enroll"):
             idle_animation.draw(screen, (W / 2, H / 2 - 30), 4)
         crystal.draw(screen)
         if playing:
@@ -159,6 +171,13 @@ def main():
             field.draw_labels(screen, label_font, (CX, CY), LABEL_RADIUS, TEXT_COLOR)
         run["effects"].draw(screen)
 
+        if on_title:
+            title_screen.draw(screen, TITLE_X, TITLE_TOP,
+                              TITLE_SECONDS - run["title_clock"], TITLE_SECONDS)
+            # after the veil, so the character reads at full brightness
+            idle_animation.draw(screen, TITLE_CHAR_POS, TITLE_CHAR_SCALE)
+        if run["transition"] is not None:
+            run["transition"].draw(screen, (CX, CY - 40))
         if run["phase"] == "report":
             report_card.draw(screen, run["syllabus"], REPORT_X, REPORT_TOP,
                              dead=run["dead"])
@@ -179,7 +198,20 @@ def main():
         health.update(dt)
 
         idle_animation.update(dt)
+        title_screen.update(dt)
 
+        if on_title:
+            run["title_clock"] += dt
+            if run["title_clock"] >= TITLE_SECONDS:
+                run["phase"] = "enroll"
+                run["transition"] = EnrollTransition(enroll_text, TEXT_COLOR)
+            continue
+        if run["phase"] == "enroll":
+            run["transition"].update(dt)
+            if run["transition"].done:
+                run["transition"] = None
+                run["phase"] = "play"
+            continue
         if run["phase"] == "dying":
             run["ending"].update(dt)
             # let the animation land before the numbers go up
