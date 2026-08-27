@@ -44,6 +44,8 @@ class Syllabus:
         self.weights = weights or WEIGHTS
         self.blocks = blocks
         self.caught = {(c, s): 0 for c in self.weights for s in self.weights[c]}
+        # blocks decided so far (caught or expired), for the running grade
+        self.resolved = {(c, s): 0 for c in self.weights for s in self.weights[c]}
 
     def build_queue(self, rng=random):
         """Every block in the semester, shuffled: the spawn order for one run."""
@@ -60,6 +62,10 @@ class Syllabus:
 
     def record(self, course, section):
         self.caught[(course, section)] += 1
+        self.resolved[(course, section)] += 1
+
+    def expire(self, course, section):
+        self.resolved[(course, section)] += 1
 
     def section_score(self, course, section):
         """Percent for one section: blocks caught out of blocks offered."""
@@ -69,6 +75,29 @@ class Syllabus:
         """Weighted percent for one class."""
         return sum(weight * self.section_score(course, section) / 100.0
                    for section, weight in self.weights[course].items())
+
+    def live_section_score(self, course, section):
+        """Percent over blocks decided so far; None while none have been."""
+        seen = self.resolved[(course, section)]
+        if not seen:
+            return None
+        return 100.0 * self.caught[(course, section)] / seen
+
+    def live_class_score(self, course):
+        """
+        Running grade for a class: the weighted average over sections that have
+        had at least one block decided. Unseen sections are left out rather than
+        counted as zero, so the number reads like a real gradebook.
+        """
+        total = live = 0.0
+        for section, weight in self.weights[course].items():
+            score = self.live_section_score(course, section)
+            if score is not None:
+                live += weight * score / 100.0
+                total += weight
+        if not total:
+            return None
+        return 100.0 * live / total
 
     def failing(self):
         """Classes below the pass mark."""

@@ -672,50 +672,204 @@ class Scoreboard:
 
 
 class ReportCard:
-    """End-of-semester screen: per-class grades, or the failure notice."""
+    """
+    End-of-semester panel. Sits on the left so the character animation has the
+    right-hand side to itself -- in the middle of the screen the sprite was
+    lost behind the ring and the text.
+    """
 
-    def __init__(self, title_font, row_font, small_font, color,
-                 pass_color=(152, 221, 160), fail_color=(240, 110, 110)):
-        self.title_font = title_font
-        self.row_font = row_font
-        self.small_font = small_font
+    def __init__(self, title_text, row_text, small_text,
+                 color=(232, 238, 230), pass_color=(150, 224, 150),
+                 fail_color=(236, 92, 92)):
+        self.title = title_text
+        self.row = row_text
+        self.small = small_text
         self.color = color
         self.pass_color = pass_color
         self.fail_color = fail_color
 
-    def draw(self, surface, syllabus, center, dim=190):
+    def draw(self, surface, syllabus, anchor_x, top, dead=False, dim=205):
         rows, overall, letter, points, failed = syllabus.report()
 
-        shade_layer = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-        shade_layer.fill((6, 8, 14, dim))
-        surface.blit(shade_layer, (0, 0))
+        veil = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        veil.fill((6, 8, 14, dim))
+        surface.blit(veil, (0, 0))
 
-        cx, top = center[0], center[1] - 150
-        head = "SEMESTER FAILED" if failed else "SEMESTER COMPLETE"
-        head_color = self.fail_color if failed else self.pass_color
-        text = self.title_font.render(head, True, head_color)
-        surface.blit(text, text.get_rect(center=(cx, top)))
+        if dead:
+            head, head_color = "DROPPED OUT", self.fail_color
+        elif failed:
+            head, head_color = "SEMESTER FAILED", self.fail_color
+        else:
+            head, head_color = "SEMESTER PASSED", self.pass_color
 
-        y = top + 54
+        y = top
+        self.title.draw(surface, head, head_color, topleft=(anchor_x, y))
+        y += 52
+
         for course, score, row_letter, _ in rows:
             ok = course not in failed
-            line = f"{course:<5} {score:5.1f}%  {row_letter}"
-            text = self.row_font.render(line, True,
-                                        self.pass_color if ok else self.fail_color)
-            surface.blit(text, text.get_rect(center=(cx, y)))
-            y += 32
-
-        y += 14
-        summary = f"semester {overall:.1f}%   grade {letter}   gpa {points:.1f}"
-        text = self.row_font.render(summary, True, self.color)
-        surface.blit(text, text.get_rect(center=(cx, y)))
-
-        if failed:
+            self.row.draw(surface, f"{course.upper():<5}{score:5.1f}%  {row_letter:<2}",
+                          self.pass_color if ok else self.fail_color,
+                          topleft=(anchor_x, y))
             y += 34
-            note = "failed: " + ", ".join(failed) + "  (below 60%)"
-            text = self.small_font.render(note, True, self.fail_color)
-            surface.blit(text, text.get_rect(center=(cx, y)))
 
-        y += 40
-        text = self.small_font.render("press R to retry", True, self.color)
-        surface.blit(text, text.get_rect(center=(cx, y)))
+        y += 12
+        pygame.draw.line(surface, (90, 98, 115), (anchor_x, y),
+                         (anchor_x + 290, y), 2)
+        y += 16
+
+        self.row.draw(surface, f"SEM  {overall:5.1f}%  {letter}", self.color,
+                      topleft=(anchor_x, y))
+        y += 34
+        self.small.draw(surface, f"gpa {points:.1f}", self.color,
+                        topleft=(anchor_x, y))
+        y += 28
+
+        if dead:
+            note = "out of health"
+        elif failed:
+            note = "failed " + ", ".join(failed)
+        else:
+            note = "all classes passed"
+        self.small.draw(surface, note,
+                        self.fail_color if (failed or dead) else self.pass_color,
+                        topleft=(anchor_x, y))
+        y += 34
+        self.small.draw(surface, "press R to retry", self.color,
+                        topleft=(anchor_x, y))
+
+
+class PixelText:
+    """
+    Renders text small then scales it up with nearest-neighbour, so the glyphs
+    come out chunky and hard-edged instead of smoothly antialiased -- the cheap
+    way to get a retro look out of an ordinary system font.
+    """
+
+    def __init__(self, font, scale=3):
+        self.font = font
+        self.scale = scale
+        self._cache = {}
+
+    def render(self, text, color):
+        key = (text, tuple(color[:3]))
+        if key not in self._cache:
+            small = self.font.render(text, False, color)      # no antialiasing
+            size = (small.get_width() * self.scale, small.get_height() * self.scale)
+            self._cache[key] = pygame.transform.scale(small, size)
+        return self._cache[key]
+
+    def draw(self, surface, text, color, **anchor):
+        image = self.render(text, color)
+        surface.blit(image, image.get_rect(**anchor))
+        return image.get_rect(**anchor)
+
+
+class HealthBar:
+    """
+    Retro segmented health. Each miss-press costs a cell, each catch refunds
+    one. Runs out and the semester is over early.
+    """
+
+    def __init__(self, pixel_text, maximum=10, cell=(20, 26), pad=4, border=3):
+        self.text = pixel_text
+        self.maximum = maximum
+        self.value = maximum
+        self.cell_w, self.cell_h = cell
+        self.pad = pad
+        self.border = border
+        self.flash = 0.0              # briefly reddens the frame after a hit
+
+    @property
+    def dead(self):
+        return self.value <= 0
+
+    def damage(self, amount=1):
+        self.value = max(0, self.value - amount)
+        self.flash = 0.35
+        return self.dead
+
+    def heal(self, amount=1):
+        self.value = min(self.maximum, self.value + amount)
+
+    def update(self, dt):
+        self.flash = max(0.0, self.flash - dt)
+
+    def width(self):
+        return self.maximum * (self.cell_w + self.pad) - self.pad + self.border * 4
+
+    def draw(self, surface, center_x, y):
+        full = self.width()
+        x0 = center_x - full / 2
+        frame = pygame.Rect(x0, y, full, self.cell_h + self.border * 4)
+
+        shell = (250, 120, 120) if self.flash > 0 else (232, 238, 230)
+        pygame.draw.rect(surface, (12, 14, 22), frame)
+        pygame.draw.rect(surface, shell, frame, self.border)
+
+        for i in range(self.maximum):
+            cx = x0 + self.border * 2 + i * (self.cell_w + self.pad)
+            cell = pygame.Rect(cx, y + self.border * 2, self.cell_w, self.cell_h)
+            if i < self.value:
+                # green while healthy, amber, then red as it empties
+                ratio = self.value / self.maximum
+                color = ((236, 92, 92) if ratio <= 0.3 else
+                         (245, 198, 96) if ratio <= 0.6 else (150, 224, 150))
+                pygame.draw.rect(surface, color, cell)
+                pygame.draw.rect(surface, shade(color, 1.35),
+                                 pygame.Rect(cell.x, cell.y, cell.w, 4))
+            else:
+                pygame.draw.rect(surface, (44, 48, 60), cell)
+
+        self.text.draw(surface, "HP", shell,
+                       midright=(x0 - 12, y + frame.height / 2))
+
+
+class GradePanel:
+    """Running grade per class, stacked, with a pass/fail read at a glance."""
+
+    GOOD = (150, 224, 150)
+    OK = (245, 198, 96)
+    BAD = (236, 92, 92)
+    IDLE = (150, 158, 175)
+
+    def __init__(self, pixel_text, courses, pos=(20, 18), row_h=52,
+                 bar=(168, 11)):
+        self.text = pixel_text
+        self.courses = list(courses)
+        self.pos = pos
+        self.row_h = row_h
+        self.bar_w, self.bar_h = bar
+
+    @staticmethod
+    def tint(score):
+        if score is None:
+            return GradePanel.IDLE
+        if score >= 80:
+            return GradePanel.GOOD
+        if score >= 60:
+            return GradePanel.OK
+        return GradePanel.BAD
+
+    def draw(self, surface, syllabus):
+        x, y = self.pos
+        for course in self.courses:
+            score = syllabus.live_class_score(course)
+            color = self.tint(score)
+            label = f"{course.upper():<5}" + ("   --" if score is None
+                                               else f"{score:5.1f}%")
+            self.text.draw(surface, label, color, topleft=(x, y))
+
+            track = pygame.Rect(x, y + self.row_h - 20, self.bar_w, self.bar_h)
+            pygame.draw.rect(surface, (26, 30, 40), track)
+            if score is not None:
+                fill = pygame.Rect(track.x, track.y,
+                                   track.w * max(0.0, min(1.0, score / 100)),
+                                   track.h)
+                pygame.draw.rect(surface, color, fill)
+            pygame.draw.rect(surface, (90, 98, 115), track, 1)
+            # the 60% pass mark, so "am I failing" is readable at a glance
+            mark = track.x + track.w * 0.6
+            pygame.draw.line(surface, (232, 238, 230),
+                             (mark, track.y - 2), (mark, track.bottom + 2), 1)
+            y += self.row_h

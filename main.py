@@ -5,8 +5,9 @@ import config as cfg
 from utils.helpers import (
     load_frames, Animation, RingCanvas, SegField, Scoreboard, HitBar, Parallax,
     Effects, CrystalRing, CrystalStyle, GlossStyle, OneShot, ReportCard,
+    PixelText, HealthBar, GradePanel,
 )
-from utils.syllabus import Syllabus
+from utils.syllabus import Syllabus, WEIGHTS
 
 W, H = cfg.WIDTH, cfg.HEIGHT # game width and height
 out_rad, in_rad = 180, 150
@@ -33,6 +34,7 @@ IDLE_SHEET = "assets/char animation/Sprites/Idle.png"
 DEATH_SHEET = "assets/char animation/Sprites/Death.png"
 BG_DIR = "assets/forest bg/PNG/Background layers"
 HIT_SOUND = "assets/sounds/hit-note.mp3"
+MISS_SOUND = "assets/sounds/missed-note.mp3"
 SPLASH_SHEET = "assets/images/blood-splash.png"
 SPLASH_FRAME = 96
 FRAME_SIZE = 250
@@ -50,6 +52,12 @@ BAR_RAMP = SEMESTER_SECONDS     # fully ramped by the final whistle
 BAR_COLOR = (255, 246, 214)   # warm cream, reads against the trees
 SPLASH_FPS = 22
 SPLASH_SCALE = 1.2
+
+MAX_HEALTH = 10                 # mis-presses tolerated
+REPORT_X = 70                   # report panel sits left...
+REPORT_TOP = 120
+END_CHAR_POS = (W - 265, H // 2 - 95)   # ...character to its right
+END_CHAR_SCALE = 4.0
 
 
 def main():
@@ -72,11 +80,16 @@ def main():
     crystal = CrystalRing((CX, CY), in_rad, out_rad, RING_COLOR, ring_style, ss=SS)
 
     label_font = pygame.font.SysFont("menlo", 15, bold=True)
-    score_font = pygame.font.SysFont("menlo", 20, bold=True)
-    title_font = pygame.font.SysFont("menlo", 30, bold=True)
+    tiny = pygame.font.SysFont("menlo", 11, bold=True)
+    hud_text = PixelText(tiny, scale=2)
+    big_text = PixelText(tiny, scale=3)
+    small_text = PixelText(tiny, scale=2)
+
     hit_sound = pygame.mixer.Sound(HIT_SOUND)
+    miss_sound = pygame.mixer.Sound(MISS_SOUND)
     splash_frames = load_frames(SPLASH_SHEET, SPLASH_FRAME, SPLASH_FRAME)
-    report_card = ReportCard(title_font, score_font, label_font, TEXT_COLOR)
+    grades = GradePanel(hud_text, WEIGHTS)
+    report_card = ReportCard(big_text, hud_text, small_text, TEXT_COLOR)
 
     def new_run():
         syllabus = Syllabus()
@@ -85,19 +98,33 @@ def main():
             "field": SegField(SEG_SPAN, SEG_LIFETIME, spawn_range=SEG_SPAWN_RANGE,
                               max_segs=MAX_SEGS, queue=syllabus.build_queue()),
             "bar": HitBar(BAR_OMEGA0, BAR_OMEGA_MAX, BAR_RAMP),
-            "scoreboard": Scoreboard(score_font, TEXT_COLOR),
+            "health": HealthBar(hud_text, MAX_HEALTH),
             "effects": Effects(),
             "clock": 0.0,
-            "over": False,
-            "death": None,
+            "phase": "play",     # play -> dying -> report
+            "dead": False,
+            "ending": None,      # the character animation shown at the end
         }
 
     run = new_run()
 
+    def finish(dead):
+        """Leave play. Death plays out in full before the report appears."""
+        run["dead"] = dead
+        show_death = dead or run["syllabus"].failing()
+        if show_death:
+            run["phase"] = "dying"
+            run["ending"] = OneShot(death_frames, END_CHAR_POS, fps=9,
+                                    scale=END_CHAR_SCALE, hold=True)
+        else:
+            # passed: the idle pose stands beside the report instead
+            run["phase"] = "report"
+            run["ending"] = None
+
     while running:
-        field, bar = run["field"], run["bar"]
+        field, bar, health = run["field"], run["bar"], run["health"]
+        playing = run["phase"] == "play"
         time_left = max(0.0, SEMESTER_SECONDS - run["clock"])
-        # last block must land with time left to catch it
         spawn_left = max(0.0, SEMESTER_SECONDS - SEG_LIFETIME - run["clock"])
 
         for event in pygame.event.get():
@@ -105,66 +132,79 @@ def main():
                 running = False
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
                 run = new_run()
-            elif not run["over"] and (
+            elif playing and (
                     event.type == pygame.MOUSEBUTTONDOWN
                     or (event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE)):
                 caught = field.pop_under(bar.angle)
                 if caught:
-                    run["scoreboard"].hit(caught)
                     run["syllabus"].record(*caught.meta)
+                    health.heal()
                     hit_sound.play()
                     run["effects"].spawn(splash_frames,
                                          caught.label_pos((CX, CY), (in_rad + out_rad) / 2),
                                          fps=SPLASH_FPS, scale=SPLASH_SCALE)
+                else:
+                    # pressing with nothing under the bar is what costs you
+                    miss_sound.play()
+                    if health.damage():
+                        finish(dead=True)
 
         background.draw(screen)
-        if run["death"] is not None:
-            run["death"].draw(screen)
-        else:
+        if run["phase"] == "play":
             idle_animation.draw(screen, (W / 2, H / 2 - 30), 4)
         crystal.draw(screen)
-        if not run["over"]:
+        if playing:
             ring.draw(screen, field.segs, SEG_FRESH, SEG_DYING, BEAT_AMPLITUDE,
                       bar=bar, bar_color=BAR_COLOR, style=seg_style)
             field.draw_labels(screen, label_font, (CX, CY), LABEL_RADIUS, TEXT_COLOR)
         run["effects"].draw(screen)
-        run["scoreboard"].draw(screen)
-        draw_clock(screen, score_font, time_left, len(field.queue or ()))
 
-        if run["over"]:
-            report_card.draw(screen, run["syllabus"], (CX, CY))
+        if run["phase"] == "report":
+            report_card.draw(screen, run["syllabus"], REPORT_X, REPORT_TOP,
+                             dead=run["dead"])
+        if run["ending"] is not None:
+            run["ending"].draw(screen)
+        elif run["phase"] == "report":
+            idle_animation.draw(screen, END_CHAR_POS, END_CHAR_SCALE)
+        if playing:
+            grades.draw(screen, run["syllabus"])
+            health.draw(screen, CX, H - 62)
+            draw_clock(screen, hud_text, time_left, len(field.queue or ()))
 
         pygame.display.flip()
 
         dt = clock.tick(60) / 1000
         background.update(dt)
         run["effects"].update(dt)
+        health.update(dt)
 
-        if run["over"]:
-            if run["death"] is not None:
-                run["death"].update(dt)
+        idle_animation.update(dt)
+
+        if run["phase"] == "dying":
+            run["ending"].update(dt)
+            # let the animation land before the numbers go up
+            if run["ending"].index >= len(death_frames) + 8:
+                run["phase"] = "report"
+            continue
+        if run["phase"] == "report":
             continue
 
         run["clock"] += dt
-        idle_animation.update(dt)
         bar.update(dt)
-        run["scoreboard"].miss(len(field.update(dt, spawn_left)))
+        for seg in field.update(dt, spawn_left):
+            run["syllabus"].expire(*seg.meta)
 
-        # the semester ends on the clock, or once every block has been resolved
         if run["clock"] >= SEMESTER_SECONDS or (not field.queue and not field.segs):
-            run["over"] = True
-            if run["syllabus"].failing():
-                run["death"] = OneShot(death_frames, (W / 2, H / 2 - 30),
-                                       fps=9, scale=4, hold=True)
+            finish(dead=False)
 
     pygame.quit()
 
 
-def draw_clock(surface, font, time_left, blocks_left):
+def draw_clock(surface, text, time_left, blocks_left):
     """Countdown and remaining blocks, top right."""
-    for i, line in enumerate((f"{time_left:5.1f}s", f"{blocks_left} left")):
-        text = font.render(line, True, TEXT_COLOR)
-        surface.blit(text, text.get_rect(topright=(W - 16, 12 + i * 28)))
+    urgent = (236, 92, 92) if time_left <= 10 else TEXT_COLOR
+    text.draw(surface, f"{time_left:5.1f}S", urgent, topright=(W - 18, 18))
+    text.draw(surface, f"{blocks_left} LEFT", TEXT_COLOR, topright=(W - 18, 46))
 
 
 if __name__ == "__main__":
