@@ -22,11 +22,10 @@ dist/
 htmlcov/
 
 # Editors
+.vscode/
 .idea/
 *.swp
 
 # OS
 .DS_Store
 Thumbs.db
-
-.vscode
