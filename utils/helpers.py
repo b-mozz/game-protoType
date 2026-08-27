@@ -1,5 +1,6 @@
 import colorsys
 import os
+import re
 import pygame
 import math
 import random
@@ -22,17 +23,81 @@ def load_frames(path, frame_width, frame_height=None, scale=1):
     return frames
 
 
-def load_layers(folder, size):
-    """Load a numbered set of background layers, back to front, scaled to size."""
-    names = sorted(
-        (f for f in os.listdir(folder) if f.endswith(".png")),
-        key=lambda f: int(os.path.splitext(f)[0]),
-    )
+def _layer_index(name):
+    """First integer in a filename, for natural sorting ('1.png', 'Layer_0003_6.png')."""
+    match = re.search(r"\d+", name)
+    return int(match.group()) if match else 0
+
+
+def load_layers(folder, size=None, reverse=False):
+    """
+    Load a numbered set of background layers in back-to-front order.
+
+    PSD exports number layers from the top of the stack down, so their far
+    layers come last -- pass reverse=True for those. Pass size to stretch each
+    layer, or leave it None to keep the source resolution.
+    """
+    names = sorted((f for f in os.listdir(folder) if f.endswith(".png")),
+                   key=_layer_index, reverse=reverse)
     layers = []
     for name in names:
         image = pygame.image.load(os.path.join(folder, name)).convert_alpha()
-        layers.append(pygame.transform.scale(image, size))
+        layers.append(pygame.transform.scale(image, size) if size else image)
     return layers
+
+
+class Parallax:
+    """
+    Scrolling layered background. Each layer drifts at its own speed -- far
+    layers barely move, near ones slide past -- and layers whose filename says
+    "Lights" breathe in and out instead of scrolling.
+    """
+
+    def __init__(self, folder, size, max_speed=26, reverse=True,
+                 light_hz=0.18, light_alpha=(90, 255)):
+        self.width, self.height = size
+        names = sorted((f for f in os.listdir(folder) if f.endswith(".png")),
+                       key=_layer_index, reverse=reverse)
+
+        self.layers = []
+        count = max(1, len(names) - 1)
+        for i, name in enumerate(names):
+            image = pygame.image.load(os.path.join(folder, name)).convert_alpha()
+            # scale to height, keep aspect, so the tile seam stays clean
+            tile_w = max(1, round(image.get_width() * self.height / image.get_height()))
+            image = pygame.transform.scale(image, (tile_w, self.height))
+            self.layers.append({
+                "image": image,
+                "tile_w": tile_w,
+                # depth curve: back layers creep, front layers slide
+                "speed": max_speed * (i / count) ** 1.6,
+                "light": "light" in name.lower(),
+                "offset": 0.0,
+            })
+
+        self.light_hz = light_hz
+        self.light_alpha = light_alpha
+        self.clock = 0.0
+
+    def update(self, dt):
+        self.clock += dt
+        for layer in self.layers:
+            if layer["light"]:
+                continue
+            layer["offset"] = (layer["offset"] + layer["speed"] * dt) % layer["tile_w"]
+
+    def draw(self, surface):
+        lo, hi = self.light_alpha
+        glow = lo + (hi - lo) * (0.5 + 0.5 * math.sin(math.tau * self.light_hz * self.clock))
+
+        for layer in self.layers:
+            image = layer["image"]
+            if layer["light"]:
+                image.set_alpha(int(glow))
+            x = -layer["offset"]
+            while x < self.width:
+                surface.blit(image, (x, 0))
+                x += layer["tile_w"]
 
 def lerp_color(c0, c1, t):
     """

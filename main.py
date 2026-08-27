@@ -3,7 +3,7 @@ import math
 import pygame
 import config as cfg
 from utils.helpers import (
-    load_frames, load_layers, Animation, RingCanvas, SegField, Scoreboard, HitBar,
+    load_frames, Animation, RingCanvas, SegField, Scoreboard, HitBar, Parallax,
 )
 
 W, H = cfg.WIDTH, cfg.HEIGHT # game width and height
@@ -11,13 +11,14 @@ out_rad, in_rad = 180, 150
 CX, CY = W // 2, H // 2 # center of the ring, in pixel
 SS = 3 # super sample factor
 RING_COLOR = "red"
-TEXT_COLOR = (30, 40, 70)
+TEXT_COLOR = (232, 238, 230)  # light: the forest bg is very dark
 SEG_FRESH = (152, 221, 160)   # pastel green, just popped
 SEG_DYING = (240, 141, 141)   # pastel red, about to vanish
 BEAT_AMPLITUDE = 6           # px the ring swells at peak beat
+BG_SCROLL = 26               # px/sec drift of the nearest parallax layer
 
 IDLE_SHEET = "assets/char animation/Sprites/Idle.png"
-SKY_DIR = "assets/coud_bg/Clouds/Clouds 5"
+BG_DIR = "assets/forest bg/PNG/Background layers"
 HIT_SOUND = "assets/sounds/hit-note.mp3"
 FRAME_SIZE = 250
 
@@ -30,7 +31,7 @@ LABEL_RADIUS = out_rad + 26
 BAR_OMEGA0 = 1.6                # radians/sec at the start
 BAR_OMEGA_MAX = 5.0             # radians/sec once fully ramped
 BAR_RAMP = 45.0                 # seconds to reach full speed
-BAR_COLOR = (30, 40, 70)
+BAR_COLOR = (255, 246, 214)   # warm cream, reads against the trees
 
 
 def main():
@@ -40,7 +41,7 @@ def main():
     clock = pygame.time.Clock()
     running = True
 
-    sky = load_layers(SKY_DIR, (W, H))
+    background = Parallax(BG_DIR, (W, H), max_speed=BG_SCROLL)
     idle_animation = Animation(load_frames(IDLE_SHEET, FRAME_SIZE, FRAME_SIZE), fps=8)
     ring = RingCanvas((CX, CY), in_rad, out_rad, ss=SS)
     field = SegField(SEG_SPAN, SEG_LIFETIME,
@@ -63,8 +64,7 @@ def main():
                     scoreboard.hit(caught)
                     hit_sound.play()
 
-        for layer in sky:
-            screen.blit(layer, (0, 0))
+        background.draw(screen)
         idle_animation.draw(screen, (W / 2, H / 2 - 30), 4)
         pygame.draw.circle(screen, RING_COLOR, (CX, CY), out_rad, 2)
         pygame.draw.circle(screen, RING_COLOR, (CX, CY), in_rad, 2)
@@ -77,6 +77,7 @@ def main():
 
         dt = clock.tick(60) / 1000
         idle_animation.update(dt)
+        background.update(dt)
         bar.update(dt)
         scoreboard.miss(len(field.update(dt)))
 
