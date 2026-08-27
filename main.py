@@ -4,13 +4,24 @@ import pygame
 import config as cfg
 from utils.helpers import (
     load_frames, Animation, RingCanvas, SegField, Scoreboard, HitBar, Parallax,
+    Effects, CrystalRing, CrystalStyle, GlossStyle,
 )
 
 W, H = cfg.WIDTH, cfg.HEIGHT # game width and height
 out_rad, in_rad = 180, 150
 CX, CY = W // 2, H // 2 # center of the ring, in pixel
 SS = 3 # super sample factor
-RING_COLOR = "red"
+RING_COLOR = (255, 96, 96)    # crystal base tint; facets shade off this
+RING_FACETS = 14              # fewer, longer cuts read as facets
+RING_JITTER = 0.07            # how chipped the cut edges look
+RING_OUTLINE = 2              # px width of the facet seams
+RING_SPOKES = True            # radial seams between the two edges
+SEG_ALPHA = 235               # segs are the target, so they stay solid
+SEG_BANDS = 24                # sub-bands shading across the thickness
+SEG_CURVE = 0.55              # how rounded the band reads
+SEG_RIM = 2                   # px bright rim on the outer edge
+RING_ALPHA = 90               # 0-255, the translucent material in the band
+RING_EDGE_ALPHA = 200         # 0-255, the facet seams drawn over it
 TEXT_COLOR = (232, 238, 230)  # light: the forest bg is very dark
 SEG_FRESH = (152, 221, 160)   # pastel green, just popped
 SEG_DYING = (240, 141, 141)   # pastel red, about to vanish
@@ -20,6 +31,8 @@ BG_SCROLL = 26               # px/sec drift of the nearest parallax layer
 IDLE_SHEET = "assets/char animation/Sprites/Idle.png"
 BG_DIR = "assets/forest bg/PNG/Background layers"
 HIT_SOUND = "assets/sounds/hit-note.mp3"
+SPLASH_SHEET = "assets/images/blood-splash.png"
+SPLASH_FRAME = 96
 FRAME_SIZE = 250
 
 SEG_SPAN = math.radians(40)     # starting angular width
@@ -32,6 +45,8 @@ BAR_OMEGA0 = 1.6                # radians/sec at the start
 BAR_OMEGA_MAX = 5.0             # radians/sec once fully ramped
 BAR_RAMP = 45.0                 # seconds to reach full speed
 BAR_COLOR = (255, 246, 214)   # warm cream, reads against the trees
+SPLASH_FPS = 22
+SPLASH_SCALE = 1.2
 
 
 def main():
@@ -44,6 +59,12 @@ def main():
     background = Parallax(BG_DIR, (W, H), max_speed=BG_SCROLL)
     idle_animation = Animation(load_frames(IDLE_SHEET, FRAME_SIZE, FRAME_SIZE), fps=8)
     ring = RingCanvas((CX, CY), in_rad, out_rad, ss=SS)
+    ring_style = CrystalStyle(facets=RING_FACETS, jitter=RING_JITTER,
+                              alpha=RING_ALPHA, edge_alpha=RING_EDGE_ALPHA,
+                              outline=RING_OUTLINE, spokes=RING_SPOKES)
+    seg_style = GlossStyle(alpha=SEG_ALPHA, bands=SEG_BANDS,
+                           curve=SEG_CURVE, rim=SEG_RIM)
+    crystal = CrystalRing((CX, CY), in_rad, out_rad, RING_COLOR, ring_style, ss=SS)
     field = SegField(SEG_SPAN, SEG_LIFETIME,
                      spawn_range=SEG_SPAWN_RANGE, max_segs=MAX_SEGS)
     bar = HitBar(BAR_OMEGA0, BAR_OMEGA_MAX, BAR_RAMP)
@@ -52,6 +73,8 @@ def main():
     score_font = pygame.font.SysFont("menlo", 20, bold=True)
     scoreboard = Scoreboard(score_font, TEXT_COLOR)
     hit_sound = pygame.mixer.Sound(HIT_SOUND)
+    splash_frames = load_frames(SPLASH_SHEET, SPLASH_FRAME, SPLASH_FRAME)
+    effects = Effects()
 
     while running:
         for event in pygame.event.get():
@@ -63,14 +86,17 @@ def main():
                 if caught:
                     scoreboard.hit(caught)
                     hit_sound.play()
+                    effects.spawn(splash_frames,
+                                  caught.label_pos((CX, CY), (in_rad + out_rad) / 2),
+                                  fps=SPLASH_FPS, scale=SPLASH_SCALE)
 
         background.draw(screen)
         idle_animation.draw(screen, (W / 2, H / 2 - 30), 4)
-        pygame.draw.circle(screen, RING_COLOR, (CX, CY), out_rad, 2)
-        pygame.draw.circle(screen, RING_COLOR, (CX, CY), in_rad, 2)
+        crystal.draw(screen)
         ring.draw(screen, field.segs, SEG_FRESH, SEG_DYING, BEAT_AMPLITUDE,
-                  bar=bar, bar_color=BAR_COLOR)
+                  bar=bar, bar_color=BAR_COLOR, style=seg_style)
         field.draw_labels(screen, label_font, (CX, CY), LABEL_RADIUS, TEXT_COLOR)
+        effects.draw(screen)
         scoreboard.draw(screen)
 
         pygame.display.flip()
@@ -78,6 +104,7 @@ def main():
         dt = clock.tick(60) / 1000
         idle_animation.update(dt)
         background.update(dt)
+        effects.update(dt)
         bar.update(dt)
         scoreboard.miss(len(field.update(dt)))
 

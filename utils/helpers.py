@@ -138,6 +138,7 @@ class Seg:
         self.name = name
         self.phase = 0.0          # beat phase, only advances once beating
 
+
     @property
     def life_left(self):
         """1.0 at spawn, 0.0 when it vanishes."""
@@ -292,6 +293,178 @@ class SegField:
             surface.blit(text, text.get_rect(center=seg.label_pos(center, radius)))
 
 
+def shade(color, factor):
+    """Lighten (factor > 1) or darken (factor < 1) a colour, clamped."""
+    return tuple(max(0, min(255, round(c * factor))) for c in color[:3])
+
+
+class CrystalStyle:
+    """The faceted-crystal look, shared by the ring and the segments."""
+
+    def __init__(self, facets=14, jitter=0.07, alpha=90, edge_alpha=200,
+                 outline=2, spokes=True, light_angle=-math.pi / 3, contrast=0.45):
+        self.facets = facets
+        self.jitter = jitter
+        self.alpha = alpha
+        self.edge_alpha = alpha if edge_alpha is None else edge_alpha
+        self.outline = outline
+        self.spokes = spokes
+        self.light_angle = light_angle
+        self.contrast = contrast
+
+    def seams(self, rng, count=None, wrap=False):
+        """Per-seam radial jitter. wrap=True closes the loop for a full ring."""
+        n = count if count is not None else self.facets
+        values = [1 + rng.uniform(-self.jitter, self.jitter) for _ in range(n)]
+        return values + ([values[0]] if wrap else
+                         [1 + rng.uniform(-self.jitter, self.jitter)])
+
+
+def draw_crystal_arc(surface, center, r_in, r_out, a0, a1, color, style,
+                     jit_out, jit_in, ss=1, glints=()):
+    """
+    Cut the arc a0..a1 of an annulus into facets and draw them: a translucent
+    pane per facet, then brighter seams over the top. jit_out/jit_in hold one
+    radial multiplier per seam and are fixed for the life of the shape, so the
+    cut stays put instead of shimmering as the arc changes size.
+    """
+    cx, cy = center
+    n = len(jit_out) - 1
+    width = max(1, round(style.outline * ss))
+
+    for i in range(n):
+        b0 = a0 + (a1 - a0) * i / n
+        b1 = a0 + (a1 - a0) * (i + 1) / n
+        ro0, ro1 = r_out * jit_out[i], r_out * jit_out[i + 1]
+        ri0, ri1 = r_in * jit_in[i], r_in * jit_in[i + 1]
+
+        quad = [
+            (cx + ro0 * math.cos(b0), cy + ro0 * math.sin(b0)),
+            (cx + ro1 * math.cos(b1), cy + ro1 * math.sin(b1)),
+            (cx + ri1 * math.cos(b1), cy + ri1 * math.sin(b1)),
+            (cx + ri0 * math.cos(b0), cy + ri0 * math.sin(b0)),
+        ]
+
+        facing = math.cos((b0 + b1) / 2 - style.light_angle)
+        factor = 1 + style.contrast * facing
+        if i in glints:
+            factor += 0.55
+        if i % 2:
+            factor -= 0.12
+
+        if style.alpha:
+            pygame.draw.polygon(surface, (*shade(color, factor), style.alpha), quad)
+        if style.outline:
+            ea = style.edge_alpha
+            pygame.draw.line(surface, (*shade(color, factor + 0.35), ea),
+                             quad[0], quad[1], width)
+            pygame.draw.line(surface, (*shade(color, factor + 0.1), ea),
+                             quad[3], quad[2], width)
+            if style.spokes:
+                pygame.draw.line(surface, (*shade(color, factor + 0.2), ea),
+                                 quad[0], quad[3], width)
+
+
+class GlossStyle:
+    """The rounded-glass look for segments."""
+
+    def __init__(self, alpha=235, bands=16, curve=0.55, rim=2, rim_boost=0.55,
+                 rounded=True, gloss=0.34):
+        self.alpha = alpha
+        self.bands = bands
+        self.curve = curve
+        self.rim = rim
+        self.rim_boost = rim_boost
+        self.rounded = rounded
+        self.gloss = gloss
+
+    def kwargs(self):
+        return dict(alpha=self.alpha, bands=self.bands, curve=self.curve,
+                    rim=self.rim, rim_boost=self.rim_boost,
+                    rounded=self.rounded, gloss=self.gloss)
+
+
+def draw_gloss_arc(surface, center, r_in, r_out, a0, a1, color, ss=1,
+                   alpha=235, bands=16, curve=0.55, rim=2, rim_boost=0.55,
+                   rounded=True, gloss=0.34):
+    """
+    A smooth annulus sector shaded like a cylinder lying along the ring.
+
+    The band is filled as thin sub-bands across its thickness, each shaded by a
+    cosine falloff so the surface reads as round rather than stepped. Rounded
+    ends come from extending each sub-band by the width of the end semicircle
+    at that depth, so the cap is part of the same gradient instead of a flat
+    disc painted over it.
+    """
+    cx, cy = center
+    thickness = r_out - r_in
+    cap_r = thickness / 2
+    mid_r = (r_in + r_out) / 2
+    span = abs(a1 - a0)
+
+    for b in range(bands):
+        t = (b + 0.5) / bands                      # centre of this sub-band
+        ri = r_in + thickness * (b / bands)
+        ro = r_in + thickness * ((b + 1) / bands) + 0.75    # overlap, no seams
+
+        # cylinder shading: smooth dome peaking at the gloss line
+        v = (t - (1 - gloss)) / max(gloss, 1 - gloss)
+        factor = 1 + curve * (math.cos(max(-1.0, min(1.0, v)) * math.pi / 2) - 0.5)
+
+        # round end: how far this depth reaches past the flat end, in radians
+        ext = 0.0
+        if rounded:
+            d = abs(t - 0.5) * thickness
+            ext = math.sqrt(max(0.0, cap_r * cap_r - d * d)) / max(mid_r, 1e-6)
+
+        b0, b1 = a0 - ext, a1 + ext
+        steps = max(3, int((span + 2 * ext) * r_out / 4))
+        pts = []
+        for radius, order in ((ro, range(steps + 1)), (ri, range(steps, -1, -1))):
+            for i in order:
+                a = b0 + (b1 - b0) * i / steps
+                pts.append((cx + radius * math.cos(a), cy + radius * math.sin(a)))
+        pygame.draw.polygon(surface, (*shade(color, factor), alpha), pts)
+
+    if rim:
+        width = max(1, round(rim * ss))
+        steps = max(3, int(span * r_out / 4))
+        pts = [(cx + r_out * math.cos(a0 + (a1 - a0) * i / steps),
+                cy + r_out * math.sin(a0 + (a1 - a0) * i / steps))
+               for i in range(steps + 1)]
+        pygame.draw.lines(surface, (*shade(color, 1 + rim_boost), alpha),
+                          False, pts, width)
+
+
+class CrystalRing:
+    """
+    A faceted, gem-cut version of the two ring circles.
+
+    The geometry never changes, so the whole ring is rendered once at
+    construction and blitted every frame after that.
+    """
+
+    def __init__(self, center, r_in, r_out, color, style, ss=3, pad=6,
+                 glints=3, seed=4):
+        self.color = color
+        size = 2 * (r_out + pad)
+        self.topleft = (center[0] - size / 2, center[1] - size / 2)
+
+        rng = random.Random(seed)
+        big = pygame.Surface((size * ss, size * ss), pygame.SRCALPHA)
+        mid = size * ss / 2
+
+        draw_crystal_arc(
+            big, (mid, mid), r_in * ss, r_out * ss, 0, math.tau, color, style,
+            style.seams(rng, wrap=True), style.seams(rng, wrap=True), ss=ss,
+            glints=set(rng.sample(range(style.facets), min(glints, style.facets))),
+        )
+        self.image = pygame.transform.smoothscale(big, (size, size))
+
+    def draw(self, surface):
+        surface.blit(self.image, self.topleft)
+
+
 class HitBar:
     """
     A marker sweeping around the ring. Its angular speed ramps from omega0
@@ -339,14 +512,23 @@ class RingCanvas:
         self.topleft = (center[0] - self.size / 2, center[1] - self.size / 2)
 
     def draw(self, surface, segs, c_start, c_end, beat_amplitude=6,
-             bar=None, bar_color=(30, 40, 70), bar_overhang=10):
+             bar=None, bar_color=(30, 40, 70), bar_overhang=10, style=None):
         self.big.fill((0, 0, 0, 0))
         for seg in segs:
             if seg.dead:
                 continue
             r_in, r_out = seg.radii(self.r_in, self.r_out, beat_amplitude)
-            pts = seg.points(self.local, r_in * self.ss, r_out * self.ss)
-            pygame.draw.polygon(self.big, seg.color(c_start, c_end), pts)
+            color = seg.color(c_start, c_end)
+
+            if style is not None:
+                draw_gloss_arc(
+                    self.big, self.local, r_in * self.ss, r_out * self.ss,
+                    seg.angle - seg.span / 2, seg.angle + seg.span / 2,
+                    color, ss=self.ss, **style.kwargs(),
+                )
+            else:
+                pts = seg.points(self.local, r_in * self.ss, r_out * self.ss)
+                pygame.draw.polygon(self.big, color, pts)
 
         if bar is not None:
             # overhang so the bar reads as a needle crossing the band
@@ -384,6 +566,57 @@ class Animation:
             size = (int(image.get_width() * scale), int(image.get_height() * scale))
             image = pygame.transform.scale(image, size)
         surface.blit(image, image.get_rect(center=center))
+
+
+class OneShot:
+    """Plays a frame list once at a fixed position, then reports itself finished."""
+
+    def __init__(self, frames, pos, fps=22, scale=1):
+        self.frames = frames
+        self.pos = pos
+        self.fps = fps
+        self.scale = scale
+        self.timer = 0.0
+        self.index = 0
+
+    @property
+    def done(self):
+        return self.index >= len(self.frames)
+
+    def update(self, dt):
+        self.timer += dt
+        step = 1 / self.fps
+        while self.timer >= step:
+            self.timer -= step
+            self.index += 1
+
+    def draw(self, surface):
+        if self.done:
+            return
+        image = self.frames[self.index]
+        if self.scale != 1:
+            size = (int(image.get_width() * self.scale), int(image.get_height() * self.scale))
+            image = pygame.transform.scale(image, size)
+        surface.blit(image, image.get_rect(center=self.pos))
+
+
+class Effects:
+    """Holds the one-shot effects currently playing and drops them when finished."""
+
+    def __init__(self):
+        self.active = []
+
+    def spawn(self, frames, pos, fps=22, scale=1):
+        self.active.append(OneShot(frames, pos, fps, scale))
+
+    def update(self, dt):
+        for effect in self.active:
+            effect.update(dt)
+        self.active = [e for e in self.active if not e.done]
+
+    def draw(self, surface):
+        for effect in self.active:
+            effect.draw(surface)
 
 
 class Scoreboard:
