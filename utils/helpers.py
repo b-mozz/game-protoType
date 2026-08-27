@@ -64,12 +64,12 @@ class Seg:
     also travels along the ring path
     '''
 
-    def __init__(self, span0, lifetime, omega, angle=None, name=""):
+    def __init__(self, span0, lifetime, omega=0.0, angle=None, name=""):
         self.angle = random.uniform(0, math.tau) if angle is None else angle
         self.span0 = span0        # starting angular width, radians
         self.span = span0
         self.lifetime = lifetime  # seconds to shrink from span0 to nothing
-        self.omega = omega        # angular velocity, radians/sec
+        self.omega = omega        # radians/sec; 0 keeps the seg parked
         self.name = name
         self.phase = 0.0          # beat phase, only advances once beating
 
@@ -152,16 +152,15 @@ SEG_NAMES = ("homework", "project", "midterm", "finals", "lab", "assignment")
 
 class SegField:
     """
-    Pops segs onto the ring at random intervals. Every seg shares one angular
-    velocity, so their relative positions never change -- placing a new seg in a
-    free gap guarantees it stays collision-free for its whole life.
+    Pops segs onto the ring at random intervals. Segs are parked -- only their
+    span shrinks -- so an angle that is free at spawn stays free for the seg's
+    whole life. The sweeping hit bar is what moves.
     """
 
-    def __init__(self, span0, lifetime, omega, spawn_range=(0.4, 1.4),
+    def __init__(self, span0, lifetime, spawn_range=(0.4, 1.4),
                  max_segs=5, gap=math.radians(6), names=SEG_NAMES):
         self.span0 = span0
         self.lifetime = lifetime
-        self.omega = omega            # one direction, shared by every seg
         self.spawn_range = spawn_range
         self.max_segs = max_segs
         self.gap = gap
@@ -188,8 +187,7 @@ class SegField:
 
         taken = {s.name for s in self.segs}
         pool = [n for n in self.names if n not in taken] or list(self.names)
-        seg = Seg(self.span0, self.lifetime, self.omega,
-                  angle=angle, name=random.choice(pool))
+        seg = Seg(self.span0, self.lifetime, angle=angle, name=random.choice(pool))
         self.segs.append(seg)
         return seg
 
@@ -207,6 +205,14 @@ class SegField:
         self.segs = [s for s in self.segs if not s.dead]
         return expired
 
+    def pop_under(self, angle):
+        """Remove and return the seg covering the given angle, or None."""
+        for seg in self.segs:
+            if seg.contains(angle):
+                self.segs.remove(seg)
+                return seg
+        return None
+
     def pop_at(self, pos, center, r_in, r_out):
         """Remove and return the seg under pos, or None."""
         for seg in self.segs:
@@ -221,17 +227,54 @@ class SegField:
             surface.blit(text, text.get_rect(center=seg.label_pos(center, radius)))
 
 
+class HitBar:
+    """
+    A marker sweeping around the ring. Its angular speed ramps from omega0
+    toward omega_max over `ramp` seconds, so the game tightens as it runs.
+    """
+
+    def __init__(self, omega0, omega_max, ramp, angle=0.0, width=7):
+        self.omega0 = omega0
+        self.omega_max = omega_max
+        self.ramp = ramp          # seconds to reach full speed
+        self.angle = angle
+        self.width = width        # px, measured across the sweep
+        self.elapsed = 0.0
+
+    @property
+    def omega(self):
+        t = min(1.0, self.elapsed / self.ramp)
+        return self.omega0 + 0.01 * t
+
+    def update(self, dt):
+        self.elapsed += dt
+        self.angle = (self.angle + self.omega * dt) % math.tau
+
+    def points(self, center, r_in, r_out):
+        """Outline of the bar: a thin radial slab across the ring band."""
+        half = (self.width / 2) / r_out      # px -> radians at the outer edge
+        a0, a1 = self.angle - half, self.angle + half
+        cx, cy = center
+        return [
+            (cx + r_out * math.cos(a0), cy + r_out * math.sin(a0)),
+            (cx + r_out * math.cos(a1), cy + r_out * math.sin(a1)),
+            (cx + r_in * math.cos(a1), cy + r_in * math.sin(a1)),
+            (cx + r_in * math.cos(a0), cy + r_in * math.sin(a0)),
+        ]
+
+
 class RingCanvas:
     """Draws ring segments on a supersampled surface, then downscales for smooth edges."""
 
-    def __init__(self, center, r_in, r_out, ss=3, pad=8):  # pad must clear the beat swell
+    def __init__(self, center, r_in, r_out, ss=3, pad=12):  # must clear the beat swell and bar overhang
         self.r_in, self.r_out, self.ss = r_in, r_out, ss
         self.size = 2 * (r_out + pad)
         self.big = pygame.Surface((self.size * ss, self.size * ss), pygame.SRCALPHA)
         self.local = (self.size * ss / 2, self.size * ss / 2)
         self.topleft = (center[0] - self.size / 2, center[1] - self.size / 2)
 
-    def draw(self, surface, segs, c_start, c_end, beat_amplitude=6):
+    def draw(self, surface, segs, c_start, c_end, beat_amplitude=6,
+             bar=None, bar_color=(30, 40, 70), bar_overhang=10):
         self.big.fill((0, 0, 0, 0))
         for seg in segs:
             if seg.dead:
@@ -239,6 +282,14 @@ class RingCanvas:
             r_in, r_out = seg.radii(self.r_in, self.r_out, beat_amplitude)
             pts = seg.points(self.local, r_in * self.ss, r_out * self.ss)
             pygame.draw.polygon(self.big, seg.color(c_start, c_end), pts)
+
+        if bar is not None:
+            # overhang so the bar reads as a needle crossing the band
+            pygame.draw.polygon(self.big, bar_color, bar.points(
+                self.local,
+                (self.r_in - bar_overhang) * self.ss,
+                (self.r_out + bar_overhang) * self.ss,
+            ))
         surface.blit(pygame.transform.smoothscale(self.big, (self.size, self.size)), self.topleft)
 
 
