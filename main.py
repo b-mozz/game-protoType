@@ -24,7 +24,7 @@ def spawn_seg():
     return Seg(
         span0=SEG_SPAN,
         lifetime=SEG_LIFETIME,
-        omega=random.choice((-1, 1)) * random.uniform(0.3, 0.8),
+        omega=random.uniform(0.3, 0.8),
     )
 
 
