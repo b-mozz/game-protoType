@@ -225,7 +225,8 @@ class SegField:
     """
 
     def __init__(self, span0, lifetime, spawn_range=(0.4, 1.4),
-                 max_segs=5, gap=math.radians(6), names=SEG_NAMES, queue=None):
+                 max_segs=5, gap=math.radians(6), names=SEG_NAMES, queue=None,
+                 initial_delay=None):
         self.span0 = span0
         self.lifetime = lifetime
         self.spawn_range = spawn_range
@@ -234,7 +235,8 @@ class SegField:
         self.names = names
         self.queue = list(queue) if queue else None   # syllabus blocks to hand out
         self.segs = []
-        self.timer = random.uniform(*spawn_range)
+        self.timer = (random.uniform(*spawn_range)
+                  if initial_delay is None else initial_delay)
 
     def free_angle(self, tries=24):
         """A random angle whose seg would not overlap any live seg, or None."""

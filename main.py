@@ -1,4 +1,5 @@
 import math
+import os
 
 import pygame
 import config as cfg
@@ -36,6 +37,7 @@ DEATH_SHEET = "assets/char animation/Sprites/Death.png"
 BG_DIR = "assets/forest bg/PNG/Background layers"
 HIT_SOUND = "assets/sounds/hit-note.mp3"
 MISS_SOUND = "assets/sounds/missed-note.mp3"
+BACKGROUND_MUSIC = "assets/music/NewGenesisCut2.flac"
 SPLASH_SHEET = "assets/images/blood-splash.png"
 SPLASH_FRAME = 96
 FRAME_SIZE = 250
@@ -43,7 +45,7 @@ FRAME_SIZE = 250
 SEMESTER_SECONDS = 80           # one full run
 SEG_SPAN = math.radians(40)     # starting angular width
 SEG_LIFETIME = 4.2              # must outlast one bar lap, or it is uncatchable
-SEG_SPAWN_RANGE = (0.35, 1.4)   # clamp on the paced spawn interval
+SEG_SPAWN_RANGE = (1.37, 1.37)  # fixed seconds between blocks
 MAX_SEGS = 7
 LABEL_RADIUS = out_rad + 26
 
@@ -69,6 +71,10 @@ END_CHAR_SCALE = 4.0
 def main():
     pygame.init()
     pygame.mixer.init()
+    if os.path.exists(BACKGROUND_MUSIC):
+        pygame.mixer.music.load(BACKGROUND_MUSIC)
+        pygame.mixer.music.set_volume(0.35)
+        pygame.mixer.music.play(-1)
     screen = pygame.display.set_mode((W, H))
     clock = pygame.time.Clock()
     running = True
